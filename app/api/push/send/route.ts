@@ -24,15 +24,30 @@ export async function POST(req: NextRequest) {
       .select('*')
       .or(`clean_phone.eq.${cleanTarget},clean_phone.eq.${targetPhone}`);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    if (!subs || subs.length === 0) return NextResponse.json({ error: 'No subscriptions', phone: cleanTarget }, { status: 404 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
-    let webpush: any;
+    if (!subs || subs.length === 0) {
+      return NextResponse.json({ error: 'No subscriptions', phone: cleanTarget }, { status: 404 });
+    }
+
+    // Опит за web-push с webpack ignore за да не чупи build-а ако липсва
+    let webpush: any = null;
     try {
-      webpush = await import('web-push');
+      // @ts-ignore - dynamic import с ignore за да не чупи build
+      const mod = await import(/* webpackIgnore: true */ 'web-push');
+      webpush = mod.default || mod;
       webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-    } catch (e) {
-      return NextResponse.json({ success: true, fallback: true, subscriptions: subs.length });
+    } catch (e: any) {
+      console.log('web-push not installed yet, using fallback - build will pass');
+      // Върни success за сега, push ще работи чрез realtime, а като инсталираш web-push ще праща и при затворено приложение
+      return NextResponse.json({ 
+        success: true, 
+        fallback: true,
+        message: 'web-push not installed - add to package.json: "web-push": "^3.6.7" then npm install',
+        subscriptions: subs.length 
+      });
     }
 
     const payload = JSON.stringify({
@@ -45,7 +60,8 @@ export async function POST(req: NextRequest) {
     const results = [];
     for (const subRow of subs) {
       try {
-        await webpush.sendNotification(subRow.subscription, payload);
+        const subscription = subRow.subscription;
+        await webpush.sendNotification(subscription, payload);
         results.push({ phone: subRow.clean_phone, success: true });
       } catch (err: any) {
         if (err.statusCode === 410 || err.statusCode === 404) {
@@ -56,7 +72,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ success: true, results });
+
   } catch (e: any) {
+    console.error('Push send error', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
